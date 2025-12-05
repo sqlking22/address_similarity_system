@@ -1,0 +1,31 @@
+# 核心依赖
+pandas>=1.5.0
+numpy>=1.23.0
+scikit-learn>=1.2.0
+scipy>=1.10.0
+geopy>=2.3.0
+rapidfuzz>=3.0.0
+python-Levenshtein>=0.21.0
+jaro-winkler>=0.1.0
+datasketch>=1.5.0
+
+# 地址处理
+cpca>=0.2.0
+jionlp>=1.4.12
+
+# 地理编码（可选）
+# 需要下载GeocodingCHN项目
+
+# 可视化
+matplotlib>=3.7.0
+seaborn>=0.12.0
+folium>=0.14.0
+plotly>=5.14.0
+
+# 并行处理
+joblib>=1.2.0
+dask>=2023.3.0
+
+# 性能优化
+numba>=0.57.0
+polars>=0.18.0
