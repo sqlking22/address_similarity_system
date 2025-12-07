@@ -7,6 +7,10 @@
 """
 import os
 from pathlib import Path
+from utils.logger import setup_logging
+
+# 初始化日志记录器
+logger = setup_logging('config.py').get_logger()
 
 
 class Config:
@@ -25,8 +29,8 @@ class Config:
     ALGORITHM_CONFIG = {
         # 相似度权重
         'weights': {
-            'text': 0.5,  # 文本相似度权重
-            'spatial': 0.3,  # 空间相似度权重
+            'text': 0.4,  # 文本相似度权重
+            'spatial': 0.4,  # 空间相似度权重
             'admin': 0.2,  # 行政区划相似度权重
         },
 
@@ -45,9 +49,9 @@ class Config:
 
         # 聚类参数
         'clustering': {
-            'similarity_threshold': 0.7,  # 相似度阈值
+            'similarity_threshold': 0.85,  # 相似度阈值
             'min_cluster_size': 2,  # 最小聚类大小
-            'max_cluster_radius_km': 5,  # 最大聚类半径
+            'max_cluster_radius_km': 3,  # 最大聚类半径
         },
 
         # 性能参数
@@ -70,6 +74,20 @@ class Config:
             'use_cpca': True,  # 使用cpca
             'use_jionlp': True,  # 使用jionlp
             'use_advanced_parser': True,  # 使用高级解析器
+        },
+        # 聚类算法参数
+        'clustering_algorithms': {
+            'dbscan': {
+                'eps': 0.5,
+                'min_samples': 2
+            },
+            'hierarchical': {
+                'linkage': 'average'
+            },
+            'optimization': {
+                'min_similarity': 0.5,
+                'sampling_size': 5
+            }
         }
     }
 
@@ -79,6 +97,19 @@ class Config:
         'output_encoding': 'utf-8-sig',  # 兼容Excel
         'max_file_size_mb': 1024,  # 最大文件大小
     }
+
+    # 数据库配置
+    DATABASE_CONFIG = {
+        'host': 'localhost',
+        'port': 3306,
+        'user': 'root',
+        'password': 'admin',
+        'database': 'address_similarity',
+        'charset': 'utf8mb4',
+        'ssl_disabled': True  # 添加这一行来禁用SSL（如果不需要）
+    }
+
+
 
     @classmethod
     def get_output_path(cls, filename):

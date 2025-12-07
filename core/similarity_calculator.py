@@ -15,6 +15,10 @@ from datasketch import MinHash, MinHashLSH
 from typing import Dict, Any, List, Tuple, Optional
 import math
 import collections
+from utils.logger import setup_logging
+
+# 初始化日志记录器
+logger = setup_logging('similarity_calculator.py').get_logger()
 
 
 def calculate_haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -264,11 +268,10 @@ class MultiDimensionalSimilarityCalculator:
         prov1 = comp1.get('province', '')
         prov2 = comp2.get('province', '')
         if prov1 and prov2:
-            if prov1 == prov2:
-                similarity += 0.4
+            if prov1 != prov2:
+                return 0.0  # 省份不同直接判定为不相似
             else:
-                # 省份不同，相似度大幅降低
-                return 0.1
+                similarity += 0.4
 
         # 2. 城市匹配
         city1 = comp1.get('city', '')
@@ -276,8 +279,8 @@ class MultiDimensionalSimilarityCalculator:
         if city1 and city2:
             if city1 == city2:
                 similarity += 0.3
-            elif prov1 == prov2:  # 同省不同市
-                similarity += 0.1
+            # elif prov1 == prov2:  # 同省不同市
+            #     similarity += 0.1
 
         # 3. 区县匹配
         district1 = comp1.get('district', '')
@@ -285,8 +288,8 @@ class MultiDimensionalSimilarityCalculator:
         if district1 and district2:
             if district1 == district2:
                 similarity += 0.2
-            elif city1 == city2:  # 同市不同区
-                similarity += 0.1
+            # elif city1 == city2:  # 同市不同区
+            #     similarity += 0.1
 
         # 4. 街道匹配
         street1 = comp1.get('street', '')
@@ -341,52 +344,86 @@ class MultiDimensionalSimilarityCalculator:
                                      address_data: Dict[int, Dict[str, Any]],
                                      n_jobs: int = 8) -> List[Dict[str, Any]]:
         """
-        批量计算相似度
-
-        Args:
-            address_pairs: 地址对列表，每个元素为(id1, id2, 额外信息)
-            address_data: 地址数据字典，key为ID，value为地址信息
-            n_jobs: 并行任务数
-
-        Returns:
-            相似度结果列表
+        批量计算相似度 - 使用 loky 后端处理大数据量
         """
-        from joblib import Parallel, delayed
+        from joblib import Parallel, delayed, parallel_backend
 
-        def process_pair(pair):
+        # 提取轻量级数据用于并行处理
+        light_address_data = {}
+        for addr_id, addr_info in address_data.items():
+            light_address_data[addr_id] = {
+                'standardized': addr_info.get('standardized', ''),
+                'latitude': addr_info.get('latitude'),
+                'longitude': addr_info.get('longitude'),
+                'parsed': addr_info.get('parsed', {}),
+                'original': addr_info.get('original', '')
+            }
+
+        # 提取计算所需的核心参数
+        calc_params = {
+            'weights': self.weights,
+            'spatial_config': self.spatial_config
+        }
+
+        def process_pair_light(pair, light_data, params):
+            """轻量级处理函数"""
             id1, id2, extra_info = pair
 
-            if id1 not in address_data or id2 not in address_data:
+            if id1 not in light_data or id2 not in light_data:
                 return None
 
-            addr1 = address_data[id1]
-            addr2 = address_data[id2]
+            addr1 = light_data[id1]
+            addr2 = light_data[id2]
 
-            similarity = self.calculate_comprehensive_similarity(
-                text1=addr1.get('standardized', ''),
-                text2=addr2.get('standardized', ''),
-                lat1=addr1.get('latitude'),
-                lon1=addr1.get('longitude'),
-                lat2=addr2.get('latitude'),
-                lon2=addr2.get('longitude'),
-                comp1=addr1.get('parsed', {}),
-                comp2=addr2.get('parsed', {})
+            # 重新构建计算所需的参数
+            calc_self = type('CalcHelper', (), {
+                'weights': params['weights'],
+                'spatial_config': params['spatial_config'],
+                'calculate_comprehensive_similarity': self.calculate_comprehensive_similarity
+            })()
+
+            similarity = calc_self.calculate_comprehensive_similarity(
+                text1=addr1['standardized'],
+                text2=addr2['standardized'],
+                lat1=addr1['latitude'],
+                lon1=addr1['longitude'],
+                lat2=addr2['latitude'],
+                lon2=addr2['longitude'],
+                comp1=addr1['parsed'],
+                comp2=addr2['parsed']
             )
 
             similarity.update({
                 'id1': id1,
                 'id2': id2,
-                'address1': addr1.get('original', ''),
-                'address2': addr2.get('original', ''),
+                'address1': addr1['original'],
+                'address2': addr2['original'],
                 **extra_info
             })
 
             return similarity
 
-        results = Parallel(n_jobs=n_jobs)(
-            delayed(process_pair)(pair)
-            for pair in address_pairs
-        )
+        # 使用 loky 后端处理大数据量
+        try:
+            with parallel_backend('loky', max_nbytes=None):
+                results = Parallel(n_jobs=n_jobs, verbose=0)(
+                    delayed(process_pair_light)(pair, light_address_data, calc_params)
+                    for pair in address_pairs
+                )
+        except Exception as e:
+            # 如果并行处理失败，降级为分批处理
+            print(f"并行处理失败，使用分批处理: {e}")
+            results = []
+            batch_size = max(1000, len(address_pairs) // (n_jobs * 4))
+
+            for i in range(0, len(address_pairs), batch_size):
+                batch_pairs = address_pairs[i:i + batch_size]
+                with parallel_backend('loky', max_nbytes=None):
+                    batch_results = Parallel(n_jobs=min(n_jobs, 2), verbose=0)(
+                        delayed(process_pair_light)(pair, light_address_data, calc_params)
+                        for pair in batch_pairs
+                    )
+                    results.extend(batch_results)
 
         # 过滤None结果
         return [r for r in results if r is not None]

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# !/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # @Time    : 2025/12/5 15:33
 # @Author  : hejun
@@ -10,6 +10,39 @@ import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+
+
+class ColoredFormatter(logging.Formatter):
+    """彩色日志格式化器"""
+
+    # ANSI颜色代码
+    COLORS = {
+        'DEBUG': '\033[36m',  # 青色
+        'INFO': '\033[32m',  # 绿色
+        'WARNING': '\033[33m',  # 黄色
+        'ERROR': '\033[31m',  # 红色
+        'CRITICAL': '\033[35m',  # 紫色
+        'RESET': '\033[0m'  # 重置
+    }
+
+    def __init__(self, fmt: str, datefmt: str = None):
+        super().__init__(fmt, datefmt)
+        self.fmt = fmt
+
+    def format(self, record):
+        # 添加行号信息
+        log_fmt = self.fmt
+        if hasattr(record, 'lineno'):
+            log_fmt = log_fmt.replace('%(message)s', '[%(lineno)d] %(message)s')
+
+        # 为警告和错误级别添加颜色
+        if record.levelname in self.COLORS:
+            color = self.COLORS[record.levelname]
+            reset = self.COLORS['RESET']
+            record.levelname = f"{color}{record.levelname}{reset}"
+
+        formatter = logging.Formatter(log_fmt, self.datefmt)
+        return formatter.format(record)
 
 
 class Logger:
@@ -32,9 +65,15 @@ class Logger:
         self.logger.setLevel(level)
         self.logger.handlers.clear()  # 清除现有处理器
 
-        # 设置格式
+        # 设置格式（包含行号）
         formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            '%(asctime)s - %(name)s - %(levelname)s - %(funcName)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+
+        # 彩色控制台格式化器（包含行号）
+        colored_formatter = ColoredFormatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(funcName)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
 
@@ -42,7 +81,7 @@ class Logger:
         if console:
             console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setLevel(level)
-            console_handler.setFormatter(formatter)
+            console_handler.setFormatter(colored_formatter)  # 使用彩色格式化器
             self.logger.addHandler(console_handler)
 
         # 文件处理器
@@ -55,7 +94,7 @@ class Logger:
 
             file_handler = logging.FileHandler(log_file, encoding='utf-8')
             file_handler.setLevel(level)
-            file_handler.setFormatter(formatter)
+            file_handler.setFormatter(formatter)  # 文件使用普通格式化器
             self.logger.addHandler(file_handler)
 
             self.log_file = log_file

@@ -11,6 +11,12 @@ from scipy.sparse.csgraph import connected_components
 from sklearn.cluster import DBSCAN, AgglomerativeClustering
 from typing import Dict, List, Any, Optional
 import pandas as pd
+from .geocoding_integration import GeocodingCHNIntegration  # 使用相对导入
+from utils.logger import setup_logging
+from .similarity_calculator import calculate_haversine_distance  # 导入已有的距离计算函数
+
+# 初始化日志记录器
+logger = setup_logging('clustering.py').get_logger()
 
 
 class AddressClustering:
@@ -45,13 +51,18 @@ class AddressClustering:
         if threshold is None:
             threshold = self.clustering_config['similarity_threshold']
 
-        # 创建邻接矩阵
-        adj_matrix = similarity_matrix >= threshold
+        n = len(similarity_matrix)
+        adj_matrix = np.zeros((n, n), dtype=bool)
 
-        # 转换为稀疏矩阵
+        # 更严格的相似度判断
+        for i in range(n):
+            for j in range(i + 1, n):
+                if similarity_matrix[i, j] >= threshold:
+                    # 可以添加额外约束，例如行政区划必须相同等
+                    adj_matrix[i, j] = True
+                    adj_matrix[j, i] = True
+
         adj_sparse = csr_matrix(adj_matrix)
-
-        # 计算连通分量
         n_components, labels = connected_components(
             csgraph=adj_sparse,
             directed=False,
@@ -94,14 +105,11 @@ class AddressClustering:
                 if similarity_matrix[i, j] >= similarity_threshold:
                     # 空间距离条件
                     if coordinates[i] is not None and coordinates[j] is not None:
-                        # 计算空间距离
-                        from geocoding_integration import GeocodingCHNIntegration
-                        geocoder = GeocodingCHNIntegration()
-
+                        # 计算空间距离，使用已有的距离计算函数
                         lat1, lon1 = coordinates[i]
                         lat2, lon2 = coordinates[j]
 
-                        distance_km = geocoder.calculate_distance(lat1, lon1, lat2, lon2)
+                        distance_km = calculate_haversine_distance(lat1, lon1, lat2, lon2)
 
                         if distance_km <= spatial_threshold_km:
                             adj_matrix[i, j] = True
@@ -126,8 +134,8 @@ class AddressClustering:
     def cluster_with_dbscan(self,
                             similarity_matrix: np.ndarray,
                             coordinates: Optional[np.ndarray] = None,
-                            eps: float = 0.5,
-                            min_samples: int = 2) -> np.ndarray:
+                            eps: float = None,
+                            min_samples: int = None) -> np.ndarray:
         """
         使用DBSCAN聚类
 
@@ -140,6 +148,13 @@ class AddressClustering:
         Returns:
             聚类标签数组
         """
+
+        # 从配置获取默认值
+        if eps is None:
+            eps = self.config.get('clustering_algorithms', {}).get('dbscan', {}).get('eps', 0.5)
+        if min_samples is None:
+            min_samples = self.config.get('clustering_algorithms', {}).get('dbscan', {}).get('min_samples', 2)
+
         # 转换相似度为距离
         distance_matrix = 1 - similarity_matrix
 
@@ -195,6 +210,9 @@ class AddressClustering:
         Returns:
             聚类标签数组
         """
+        # 从配置获取链接方式
+        linkage = self.config.get('clustering_algorithms', {}).get('hierarchical', {}).get('linkage', 'average')
+
         # 转换相似度为距离
         distance_matrix = 1 - similarity_matrix
 
@@ -202,7 +220,7 @@ class AddressClustering:
             n_clusters=n_clusters,
             distance_threshold=distance_threshold,
             metric='precomputed',
-            linkage='average'
+            linkage=linkage
         )
 
         labels = clustering.fit_predict(distance_matrix)
@@ -249,7 +267,7 @@ class AddressClustering:
 
     def optimize_clustering(self, labels: np.ndarray,
                             similarity_matrix: np.ndarray,
-                            min_similarity: float = 0.5) -> np.ndarray:
+                            min_similarity: float = None) -> np.ndarray:
         """
         优化聚类结果
 
@@ -261,6 +279,10 @@ class AddressClustering:
         Returns:
             优化后的聚类标签
         """
+        if min_similarity is None:
+            min_similarity = self.config.get('clustering_algorithms', {}).get('optimization', {}).get('min_similarity',
+                                                                                                      0.5)
+
         n = len(labels)
         new_labels = labels.copy()
 
@@ -277,6 +299,83 @@ class AddressClustering:
 
         return new_labels
 
+    def validate_clusters(self, labels: np.ndarray,
+                          address_data: Dict[int, Dict[str, Any]],
+                          similarity_matrix: np.ndarray) -> np.ndarray:
+        """
+        验证聚类结果，拆分不合理的聚类
+
+        Args:
+            labels: 聚类标签数组
+            address_data: 地址数据字典
+            similarity_matrix: 相似度矩阵
+
+        Returns:
+            验证后的聚类标签数组
+        """
+        new_labels = labels.copy()
+
+        # 对每个聚类组进行验证
+        unique_labels = np.unique(labels)
+        next_label = max(unique_labels) + 1 if len(unique_labels) > 0 else 0
+
+        for label in unique_labels:
+            if label == -1:  # 噪声点跳过
+                continue
+
+            # 获取该聚类的所有地址索引
+            indices = np.where(labels == label)[0]
+
+            # 如果聚类中有明显不相关的地址，进行拆分
+            if len(indices) > 2:
+                # 检查聚类内地址的相似度是否合理
+                needs_split = False
+
+                for i in range(len(indices)):
+                    for j in range(i + 1, len(indices)):
+                        idx1, idx2 = indices[i], indices[j]
+                        # 如果任意两个地址相似度很低，则需要拆分
+                        if similarity_matrix[idx1, idx2] < 0.6:  # 阈值可以根据需要调整
+                            needs_split = True
+                            break
+                    if needs_split:
+                        break
+
+                # 如果需要拆分，使用层次聚类重新分组
+                if needs_split:
+                    # 构建该聚类的子相似度矩阵
+                    sub_similarity_matrix = similarity_matrix[np.ix_(indices, indices)]
+
+                    # 简单的拆分策略：基于连通分量
+                    adj_matrix = sub_similarity_matrix >= 0.6
+                    np.fill_diagonal(adj_matrix, True)
+
+                    # 计算连通分量
+                    from scipy.sparse import csr_matrix
+                    from scipy.sparse.csgraph import connected_components
+
+                    adj_sparse = csr_matrix(adj_matrix)
+                    n_components, sub_labels = connected_components(
+                        csgraph=adj_sparse,
+                        directed=False,
+                        return_labels=True
+                    )
+
+                    # 如果拆分成多个组件，则重新分配标签
+                    if n_components > 1:
+                        logger.info(f"拆分聚类 {label} 为 {n_components} 个子聚类")
+                        # 保持主组件的标签，为其他组件分配新标签
+                        main_component_label = sub_labels[0]  # 假设第一个是主组件
+
+                        for i, idx in enumerate(indices):
+                            if sub_labels[i] != main_component_label:
+                                new_labels[idx] = next_label + sub_labels[i]
+
+                        # 更新下一个可用标签
+                        next_label += n_components - 1
+
+        return new_labels
+
     def calculate_cluster_quality(self, labels: np.ndarray,
                                   similarity_matrix: np.ndarray) -> Dict[str, float]:
         """
@@ -289,6 +388,8 @@ class AddressClustering:
         Returns:
             质量指标字典
         """
+        sampling_size = self.config.get('clustering_algorithms', {}).get('optimization', {}).get('sampling_size', 5)
+
         n = len(labels)
         unique_labels = set(labels)
 
@@ -321,8 +422,8 @@ class AddressClustering:
                 indices1 = np.where(labels == label_list[i])[0]
                 indices2 = np.where(labels == label_list[j])[0]
 
-                for idx1 in indices1[:5]:  # 采样，避免计算量过大
-                    for idx2 in indices2[:5]:
+                for idx1 in indices1[:sampling_size]:  # 采样，避免计算量过大
+                    for idx2 in indices2[:sampling_size]:
                         between_similarities.append(similarity_matrix[idx1, idx2])
 
         # 计算轮廓系数（简化版）
@@ -351,7 +452,7 @@ class AddressClustering:
                 other_cluster_indices = np.where(labels == other_label)[0]
                 if len(other_cluster_indices) > 0:
                     avg_similarity = np.mean([similarity_matrix[i, j]
-                                              for j in other_cluster_indices[:5]])  # 采样
+                                              for j in other_cluster_indices[:sampling_size]])  # 采样
                     b_i_values.append(1 - avg_similarity)
 
             if b_i_values:

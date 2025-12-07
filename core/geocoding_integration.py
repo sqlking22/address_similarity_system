@@ -8,26 +8,29 @@
 """
 import sys
 import os
-from typing import Dict, Any, Optional, List,
+from typing import Dict, Any, Optional, List
 import math
 import json
 from pathlib import Path
 import time
 from functools import lru_cache
+from utils.logger import setup_logging
+import subprocess
+
+# 初始化日志记录器
+logger = setup_logging('geocoding_integration.py').get_logger()
 
 
 class GeocodingCHNIntegration:
     """GeocodingCHN集成"""
 
-    def __init__(self, data_path: Optional[str] = None, cache_size: int = 10000):
+    def __init__(self, cache_size: int = 10000):
         """
         初始化地理编码器
 
         Args:
-            data_path: GeocodingCHN数据文件路径
             cache_size: 缓存大小
         """
-        self.data_path = data_path
         self.cache_enabled = True
         self.stats = {
             'total_requests': 0,
@@ -37,6 +40,12 @@ class GeocodingCHNIntegration:
             'avg_response_time': 0
         }
 
+        # 检查Java环境
+        if not self._check_java_environment():
+            logger.error("未检测到Java环境，请安装Java并设置JAVA_HOME环境变量")
+            self.geocoder = self._create_mock_geocoder()
+            return
+
         # 尝试导入GeocodingCHN
         self.geocoder = self._init_geocoding_chn()
 
@@ -44,39 +53,50 @@ class GeocodingCHNIntegration:
         self._cache = {}
         self.cache_size = cache_size
 
+    def _check_java_environment(self) -> bool:
+        """检查Java环境"""
+        try:
+            result = subprocess.run(['java', '-version'],
+                                    capture_output=True, text=True, timeout=10)
+            return result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+
     def _init_geocoding_chn(self):
         """初始化GeocodingCHN"""
         try:
-            # 添加项目路径
-            if self.data_path:
-                sys.path.insert(0, str(Path(self.data_path).parent))
-
-            # 尝试不同导入方式
+            # 尝试正确的导入方式
             try:
-                from GeocodingCHN.Geocoding import GeoCoder
-                print("成功导入GeocodingCHN")
-                return GeoCoder(self.data_path)
-            except ImportError:
-                try:
-                    import GeocodingCHN
-                    print("成功导入GeocodingCHN（单文件）")
-                    return GeocodingCHN.GeoCoder(self.data_path)
-                except ImportError:
-                    print("警告: 无法导入GeocodingCHN，将使用模拟模式")
-                    return self._create_mock_geocoder()
+                from GeocodingCHN.Geocoding import Geocoding
+                logger.info("成功导入GeocodingCHN")
+                return Geocoding(
+                    strict=False,  # 非严格模式，适配不完整地址
+                    # jvm_path=None
+                    jvm_path="E:\\LenovoSoftstore\\jdk-21\\bin\\server\\jvm.dll",
+                    data_class_path='core/region.dat')
+
+            except ImportError as e:
+                logger.error(f"无法导入GeocodingCHN: {e}")
+                return self._create_mock_geocoder()
 
         except Exception as e:
-            print(f"初始化GeocodingCHN失败: {e}")
+            logger.error(f"初始化GeocodingCHN失败: {e}")
             return self._create_mock_geocoder()
 
     def _create_mock_geocoder(self):
         """创建模拟地理编码器"""
 
         class MockGeocoder:
+            def normalizing(self, address):
+                """模拟地址标准化"""
+                return None
+
             def geocode(self, address):
+                """模拟地理编码"""
                 return None
 
             def reverse_geocode(self, lat, lon):
+                """模拟逆地理编码"""
                 return None
 
         return MockGeocoder()
@@ -92,48 +112,47 @@ class GeocodingCHNIntegration:
         start_time = time.time()
 
         try:
-            result = self.geocoder.geocode(address)
+            # 使用GeocodingCHN的normalizing方法进行地址标准化
+            normalized_result = self.geocoder.normalizing(address)
 
-            if result and 'lat' in result and 'lng' in result:
+            if normalized_result:
                 parsed = {
-                    'latitude': float(result['lat']),
-                    'longitude': float(result['lng']),
-                    'formatted_address': result.get('formatted_address', ''),
-                    'province': result.get('province', ''),
-                    'city': result.get('city', ''),
-                    'district': result.get('district', ''),
-                    'street': result.get('street', ''),
-                    'street_number': result.get('street_number', ''),
-                    'confidence': float(result.get('confidence', 0.0)),
+                    'latitude': None,  # GeocodingCHN主要做地址标准化，不提供经纬度
+                    'longitude': None,
+                    'formatted_address': address,
+                    'province': getattr(normalized_result, 'province', ''),
+                    'city': getattr(normalized_result, 'city', ''),
+                    'district': getattr(normalized_result, 'district', ''),
+                    'street': getattr(normalized_result, 'street', ''),
+                    'street_number': getattr(normalized_result, 'roadNum', ''),
+                    'confidence': 1.0,  # 标准化结果置信度设为1
                     'source': 'GeocodingCHN',
                     'timestamp': time.time()
                 }
 
                 self.stats['successful'] += 1
                 response_time = time.time() - start_time
-                self.stats['avg_response_time'] = (
-                                                          self.stats['avg_response_time'] * (
-                                                              self.stats['successful'] - 1) + response_time
-                                                  ) / self.stats['successful']
+                self.stats['avg_response_time'] = (self.stats['avg_response_time'] * (
+                        self.stats['successful'] - 1) + response_time) / self.stats['successful']
 
                 return parsed
 
         except Exception as e:
-            print(f"地理编码失败: {address}, 错误: {e}")
+            logger.error(f"地理编码失败: {address}, 错误: {e}")
 
         self.stats['failed'] += 1
         return None
 
     def geocode(self, address: str, use_cache: bool = True) -> Optional[Dict[str, Any]]:
         """
-        地理编码：地址 -> 经纬度
+        地理编码：地址 -> 标准化地址
 
         Args:
             address: 地址字符串
             use_cache: 是否使用缓存
 
         Returns:
-            包含经纬度和解析信息的字典
+            包含标准化地址信息的字典
         """
         if not address or not isinstance(address, str):
             return None
@@ -160,218 +179,41 @@ class GeocodingCHNIntegration:
 
         return result
 
-    def reverse_geocode(self, latitude: float, longitude: float,
-                        use_cache: bool = True) -> Optional[Dict[str, Any]]:
+    def calculate_address_similarity(self, address1: str, address2: str) -> float:
         """
-        逆地理编码：经纬度 -> 地址
+        计算两个地址的相似度
 
         Args:
-            latitude: 纬度
-            longitude: 经度
-            use_cache: 是否使用缓存
+            address1: 地址1
+            address2: 地址2
 
         Returns:
-            地址信息字典
+            相似度分数 (0-1)
         """
-        cache_key = f"reverse:{latitude:.6f},{longitude:.6f}"
-
-        if use_cache and self.cache_enabled and cache_key in self._cache:
-            self.stats['cache_hits'] += 1
-            return self._cache[cache_key]
-
         try:
-            result = self.geocoder.reverse_geocode(latitude, longitude)
-
-            if result:
-                parsed = {
-                    'formatted_address': result.get('formatted_address', ''),
-                    'province': result.get('province', ''),
-                    'city': result.get('city', ''),
-                    'district': result.get('district', ''),
-                    'street': result.get('street', ''),
-                    'street_number': result.get('street_number', ''),
-                    'source': 'GeocodingCHN'
-                }
-
-                if use_cache and self.cache_enabled:
-                    self._cache[cache_key] = parsed
-
-                return parsed
-
+            similarity = self.geocoder.similarity(address1, address2)
+            return float(similarity) if similarity is not None else 0.0
         except Exception as e:
-            print(f"逆地理编码失败: ({latitude}, {longitude}), 错误: {e}")
+            logger.error(f"计算地址相似度失败: {address1} vs {address2}, 错误: {e}")
+            return 0.0
 
-        return None
-
-    def batch_geocode(self, addresses: List[str], n_jobs: int = 8,
-                      use_cache: bool = True) -> List[Optional[Dict[str, Any]]]:
-        """批量地理编码"""
-        from joblib import Parallel, delayed
-
-        def process_address(addr):
-            return self.geocode(addr, use_cache)
-
-        results = Parallel(n_jobs=n_jobs)(
-            delayed(process_address)(addr)
-            for addr in addresses
-        )
-
-        return results
-
-    def get_administrative_info(self, address: str) -> Dict[str, Any]:
-        """获取行政区划信息"""
-        geocode_result = self.geocode(address)
-
-        if geocode_result:
-            return {
-                'province': geocode_result.get('province', ''),
-                'city': geocode_result.get('city', ''),
-                'district': geocode_result.get('district', ''),
-                'street': geocode_result.get('street', ''),
-                'country': '中国',
-                'country_code': 'CN'
-            }
-
-        return {}
-
-    def calculate_distance_haversine(self, lat1: float, lon1: float,
-                                     lat2: float, lon2: float) -> float:
+    def segment_address(self, address: str, seg_type: str = 'ik') -> List[str]:
         """
-        计算两个坐标之间的球面距离（公里）- Haversine公式
+        对地址进行分词
 
         Args:
-            lat1, lon1: 第一个坐标
-            lat2, lon2: 第二个坐标
+            address: 地址字符串
+            seg_type: 分词类型 ['ik', 'simple', 'smart', 'word']
 
         Returns:
-            距离（公里）
+            分词结果列表
         """
-        # 将角度转换为弧度
-        lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-
-        # Haversine公式
-        dlat = lat2 - lat1
-        dlon = lon2 - lon1
-        a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-        c = 2 * math.asin(math.sqrt(a))
-        r = 6371  # 地球平均半径，单位公里
-
-        return c * r
-
-    def calculate_distance_vincenty(self, lat1: float, lon1: float,
-                                    lat2: float, lon2: float) -> float:
-        """
-        计算两个坐标之间的距离（公里）- Vincenty公式（更精确）
-        """
-        from math import atan2, cos, sin, sqrt, radians
-
-        # 转换为弧度
-        lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-
-        # WGS-84椭球体参数
-        a = 6378137.0  # 长半轴，单位米
-        f = 1 / 298.257223563  # 扁率
-        b = a * (1 - f)  # 短半轴
-
-        # Vincenty公式
-        L = lon2 - lon1
-        U1 = atan2((1 - f) * sin(lat1), cos(lat1))
-        U2 = atan2((1 - f) * sin(lat2), cos(lat2))
-        sinU1 = sin(U1)
-        cosU1 = cos(U1)
-        sinU2 = sin(U2)
-        cosU2 = cos(U2)
-
-        lambda_val = L
-        for _ in range(100):  # 迭代计算
-            sin_lambda = sin(lambda_val)
-            cos_lambda = cos(lambda_val)
-            sin_sigma = sqrt((cosU2 * sin_lambda) ** 2 +
-                             (cosU1 * sinU2 - sinU1 * cosU2 * cos_lambda) ** 2)
-            if sin_sigma == 0:
-                return 0.0
-
-            cos_sigma = sinU1 * sinU2 + cosU1 * cosU2 * cos_lambda
-            sigma = atan2(sin_sigma, cos_sigma)
-            sin_alpha = cosU1 * cosU2 * sin_lambda / sin_sigma
-            cos2_alpha = 1 - sin_alpha ** 2
-            cos2_sigma_m = cos_sigma - 2 * sinU1 * sinU2 / cos2_alpha
-
-            C = f / 16 * cos2_alpha * (4 + f * (4 - 3 * cos2_alpha))
-            lambda_prev = lambda_val
-            lambda_val = L + (1 - C) * f * sin_alpha * (
-                    sigma + C * sin_sigma * (
-                    cos2_sigma_m + C * cos_sigma * (-1 + 2 * cos2_sigma_m ** 2)
-            )
-            )
-
-            if abs(lambda_val - lambda_prev) < 1e-12:
-                break
-
-        u2 = cos2_alpha * (a ** 2 - b ** 2) / (b ** 2)
-        A = 1 + u2 / 16384 * (4096 + u2 * (-768 + u2 * (320 - 175 * u2)))
-        B = u2 / 1024 * (256 + u2 * (-128 + u2 * (74 - 47 * u2)))
-        delta_sigma = B * sin_sigma * (
-                cos2_sigma_m + B / 4 * (
-                cos_sigma * (-1 + 2 * cos2_sigma_m ** 2) -
-                B / 6 * cos2_sigma_m * (-3 + 4 * sin_sigma ** 2) *
-                (-3 + 4 * cos2_sigma_m ** 2)
-        )
-        )
-
-        distance = b * A * (sigma - delta_sigma)  # 单位米
-        return distance / 1000  # 转换为公里
-
-    def calculate_distance(self, lat1: float, lon1: float,
-                           lat2: float, lon2: float, method: str = 'haversine') -> float:
-        """
-        计算两个坐标之间的距离
-
-        Args:
-            lat1, lon1: 第一个坐标
-            lat2, lon2: 第二个坐标
-            method: 计算方法（haversine或vincenty）
-
-        Returns:
-            距离（公里）
-        """
-        if method == 'vincenty':
-            return self.calculate_distance_vincenty(lat1, lon1, lat2, lon2)
-        else:
-            return self.calculate_distance_haversine(lat1, lon1, lat2, lon2)
-
-    def find_nearby_addresses(self, center_lat: float, center_lon: float,
-                              addresses: List[Dict[str, Any]], radius_km: float = 5) -> List[Dict[str, Any]]:
-        """
-        查找附近地址
-
-        Args:
-            center_lat: 中心点纬度
-            center_lon: 中心点经度
-            addresses: 地址列表，每个元素需包含latitude和longitude
-            radius_km: 搜索半径（公里）
-
-        Returns:
-            附近地址列表
-        """
-        nearby = []
-
-        for addr in addresses:
-            if 'latitude' in addr and 'longitude' in addr:
-                distance = self.calculate_distance(
-                    center_lat, center_lon,
-                    addr['latitude'], addr['longitude']
-                )
-
-                if distance <= radius_km:
-                    addr_copy = addr.copy()
-                    addr_copy['distance_km'] = distance
-                    nearby.append(addr_copy)
-
-        # 按距离排序
-        nearby.sort(key=lambda x: x['distance_km'])
-
-        return nearby
+        try:
+            segments = self.geocoder.segment(address, seg_type)
+            return segments if segments else []
+        except Exception as e:
+            logger.error(f"地址分词失败: {address}, 错误: {e}")
+            return []
 
     def get_stats(self) -> Dict[str, Any]:
         """获取统计信息"""
@@ -386,7 +228,7 @@ class GeocodingCHNIntegration:
         """清空缓存"""
         self._cache.clear()
         self.geocode_cached.cache_clear()
-        print("缓存已清空")
+        logger.info("缓存已清空")
 
     def save_cache_to_file(self, filepath: str):
         """保存缓存到文件"""
@@ -400,10 +242,10 @@ class GeocodingCHNIntegration:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(serializable_cache, f, ensure_ascii=False, indent=2)
 
-            print(f"缓存已保存到: {filepath}")
+            logger.info(f"缓存已保存到: {filepath}")
 
         except Exception as e:
-            print(f"保存缓存失败: {e}")
+            logger.error(f"保存缓存失败: {e}")
 
     def load_cache_from_file(self, filepath: str):
         """从文件加载缓存"""
@@ -413,10 +255,10 @@ class GeocodingCHNIntegration:
                     loaded_cache = json.load(f)
 
                 self._cache.update(loaded_cache)
-                print(f"从 {filepath} 加载了 {len(loaded_cache)} 个缓存项")
+                logger.info(f"从 {filepath} 加载了 {len(loaded_cache)} 个缓存项")
 
         except Exception as e:
-            print(f"加载缓存失败: {e}")
+            logger.error(f"加载缓存失败: {e}")
 
 
 class MultiSourceGeocoder:
@@ -439,13 +281,6 @@ class MultiSourceGeocoder:
 
         if primary_source == 'geocoding_chn':
             self.sources['geocoding_chn'] = GeocodingCHNIntegration()
-
-        # 可以添加其他数据源
-        if 'amap' in self.api_keys:
-            self.sources['amap'] = self._init_amap()
-
-        if 'baidu' in self.api_keys:
-            self.sources['baidu'] = self._init_baidu()
 
         # 统计信息
         self.stats = {source: {'requests': 0, 'success': 0}
@@ -478,7 +313,7 @@ class MultiSourceGeocoder:
                         return result
 
                 except Exception as e:
-                    print(f"数据源 {source} 失败: {e}")
+                    logger.error(f"数据源 {source} 失败: {e}")
 
         return None
 

@@ -15,13 +15,17 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 import folium
+import os
+from utils.logger import setup_logging
 from folium.plugins import MarkerCluster, HeatMap
 import warnings
-
 warnings.filterwarnings('ignore')
 
 plt.style.use('seaborn-v0_8-whitegrid')
 sns.set_palette("husl")
+
+# 初始化日志记录器
+logger = setup_logging('visualization.py').get_logger()
 
 
 class VisualizationTools:
@@ -81,7 +85,7 @@ class VisualizationTools:
 
         if output_file:
             plt.savefig(output_file, dpi=150, bbox_inches='tight')
-            print(f"聚类分布图已保存: {output_file}")
+            logger.info(f"聚类分布图已保存: {output_file}")
 
         plt.show()
 
@@ -90,14 +94,14 @@ class VisualizationTools:
     def plot_geographic_distribution(self, df: pd.DataFrame, output_file: str = None):
         """绘制地理分布图"""
         if 'latitude' not in df.columns or 'longitude' not in df.columns:
-            print("警告: 数据中没有经纬度信息，无法绘制地理分布图")
+            logger.warning("警告: 数据中没有经纬度信息，无法绘制地理分布图")
             return None
 
         # 筛选有效坐标
         valid_coords = df.dropna(subset=['latitude', 'longitude'])
 
         if len(valid_coords) == 0:
-            print("警告: 没有有效的坐标数据")
+            logger.warning("警告: 没有有效的坐标数据")
             return None
 
         fig, axes = plt.subplots(1, 2, figsize=(16, 8))
@@ -160,7 +164,7 @@ class VisualizationTools:
 
         if output_file:
             plt.savefig(output_file, dpi=150, bbox_inches='tight')
-            print(f"地理分布图已保存: {output_file}")
+            logger.info(f"地理分布图已保存: {output_file}")
 
         plt.show()
 
@@ -169,7 +173,7 @@ class VisualizationTools:
     def plot_similarity_distribution(self, similarity_df: pd.DataFrame, output_file: str = None):
         """绘制相似度分布图"""
         if similarity_df.empty or 'comprehensive_similarity' not in similarity_df.columns:
-            print("警告: 没有相似度数据")
+            logger.warning("警告: 没有相似度数据")
             return None
 
         fig, axes = plt.subplots(2, 2, figsize=(16, 12))
@@ -221,7 +225,7 @@ class VisualizationTools:
 
         if output_file:
             plt.savefig(output_file, dpi=150, bbox_inches='tight')
-            print(f"相似度分布图已保存: {output_file}")
+            logger.info(f"相似度分布图已保存: {output_file}")
 
         plt.show()
 
@@ -230,13 +234,13 @@ class VisualizationTools:
     def create_interactive_map(self, df: pd.DataFrame, output_file: str = None):
         """创建交互式地图"""
         if 'latitude' not in df.columns or 'longitude' not in df.columns:
-            print("警告: 没有坐标数据，无法创建地图")
+            logger.warning("警告: 没有坐标数据，无法创建地图")
             return None
 
         valid_coords = df.dropna(subset=['latitude', 'longitude'])
 
         if len(valid_coords) == 0:
-            print("警告: 没有有效的坐标数据")
+            logger.warning("警告: 没有有效的坐标数据")
             return None
 
         # 计算中心点
@@ -308,7 +312,7 @@ class VisualizationTools:
 
         if output_file:
             m.save(output_file)
-            print(f"交互式地图已保存: {output_file}")
+            logger.info(f"交互式地图已保存: {output_file}")
 
         return m
 
@@ -458,7 +462,7 @@ class VisualizationTools:
         # 保存HTML文件
         output_file = f"{output_prefix}_interactive_report.html"
         fig.write_html(output_file)
-        print(f"交互式报告已保存: {output_file}")
+        logger.info(f"交互式报告已保存: {output_file}")
 
         return fig
 
@@ -471,7 +475,7 @@ class VisualizationTools:
         output_dir = f"{output_prefix}_visualization"
         os.makedirs(output_dir, exist_ok=True)
 
-        print(f"📊 生成综合报告到目录: {output_dir}")
+        logger.info(f"📊 生成综合报告到目录: {output_dir}")
 
         # 1. 聚类分布图
         self.plot_cluster_distribution(
@@ -507,8 +511,8 @@ class VisualizationTools:
         # 6. 生成README
         self._generate_report_readme(output_dir, df, similarity_df)
 
-        print(f"✅ 综合报告生成完成！")
-        print(f"📁 所有文件保存在: {output_dir}")
+        logger.info(f"✅ 综合报告生成完成！")
+        logger.info(f"📁 所有文件保存在: {output_dir}")
 
         return output_dir
 

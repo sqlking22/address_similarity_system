@@ -2,10 +2,6 @@
 # -*- coding: utf-8 -*-
 # @Time    : 2025/12/5 15:17
 # @Author  : hejun
-"""
-高级地址标准化模块
-结合cpca、jionlp和规则引擎
-"""
 import re
 import pandas as pd
 from typing import Dict, List, Any
@@ -13,6 +9,17 @@ import hashlib
 import jionlp as jio
 import cpca
 import unicodedata
+
+from joblib import Parallel, delayed
+from utils.logger import setup_logging
+
+# 初始化日志记录器
+logger = setup_logging('address_normalizer.py').get_logger()
+
+"""
+高级地址标准化模块
+结合cpca、jionlp和规则引擎
+"""
 
 
 class AdvancedAddressNormalizer:
@@ -120,7 +127,7 @@ class AdvancedAddressNormalizer:
             }
 
         except Exception as e:
-            print(f"地址标准化失败: {address}, 错误: {e}")
+            logger.error(f"地址标准化失败: {address}, 错误: {e}")
             return self._empty_result(address)
 
     def _basic_clean(self, text: str) -> str:
@@ -192,7 +199,7 @@ class AdvancedAddressNormalizer:
                     'source': 'cpca',
                 }
         except Exception as e:
-            print(f"cpca解析失败: {address}, 错误: {e}")
+            logger.error(f"cpca解析失败: {address}, 错误: {e}")
         return {}
 
     def _parse_with_jionlp(self, address: str) -> Dict[str, Any]:
@@ -210,7 +217,7 @@ class AdvancedAddressNormalizer:
                     'source': 'jionlp',
                 }
         except Exception as e:
-            print(f"jionlp解析失败: {address}, 错误: {e}")
+            logger.error(f"jionlp解析失败: {address}, 错误: {e}")
 
         return {}
 
@@ -313,7 +320,7 @@ class AdvancedAddressNormalizer:
         if building_match:
             components['building'] = building_match.group(1)
 
-        # 提取房间号
+        # 提取房号
         room_match = self.patterns['room'].search(address)
         if room_match:
             components['room'] = room_match.group(1)
@@ -352,7 +359,6 @@ class AdvancedAddressNormalizer:
 
     def batch_normalize(self, addresses: List[str], n_jobs: int = 8) -> List[Dict[str, Any]]:
         """批量标准化地址"""
-        from joblib import Parallel, delayed
 
         results = Parallel(n_jobs=n_jobs)(
             delayed(self.normalize_single)(addr)
@@ -373,7 +379,7 @@ class AddressStandardizationPipeline:
         """处理DataFrame"""
         addresses = df[address_column].fillna('').astype(str).tolist()
 
-        print(f"开始标准化 {len(addresses)} 个地址...")
+        logger.info(f"开始标准化 {len(addresses)} 个地址...")
         results = self.normalizer.batch_normalize(
             addresses,
             n_jobs=self.config.get('n_jobs', 8)
@@ -387,6 +393,6 @@ class AddressStandardizationPipeline:
             if col not in df.columns:
                 df[col] = results_df[col]
 
-        print(f"地址标准化完成，成功: {results_df['success'].sum()}/{len(results_df)}")
+        logger.info(f"地址标准化完成，成功: {results_df['success'].sum()}/{len(results_df)}")
 
         return df

@@ -11,9 +11,13 @@ import csv
 import pandas as pd
 import pickle
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Union
 import gzip
 import shutil
+from utils.logger import setup_logging
+
+# 初始化日志记录器
+logger = setup_logging('file_utils.py').get_logger()
 
 
 class FileUtils:
@@ -87,7 +91,7 @@ class FileUtils:
             chunk_file = filepath.parent / f"{filepath.stem}_part{i // chunksize}{filepath.suffix}"
             FileUtils.save_dataframe(chunk, chunk_file, **kwargs)
 
-        print(f"数据已分块保存到: {filepath.parent}/{filepath.stem}_part*{filepath.suffix}")
+        logger.info(f"数据已分块保存到: {filepath.parent}/{filepath.stem}_part*{filepath.suffix}")
 
     @staticmethod
     def compress_file(input_file: Union[str, Path],
@@ -106,7 +110,7 @@ class FileUtils:
         if remove_original:
             input_file.unlink()
 
-        print(f"文件已压缩: {output_file}")
+        logger.info(f"文件已压缩: {output_file}")
 
     @staticmethod
     def decompress_file(input_file: Union[str, Path],
@@ -125,7 +129,7 @@ class FileUtils:
         if remove_original:
             input_file.unlink()
 
-        print(f"文件已解压: {output_file}")
+        logger.info(f"文件已解压: {output_file}")
 
     @staticmethod
     def get_file_info(filepath: Union[str, Path]) -> Dict[str, Any]:
@@ -185,7 +189,7 @@ class FileUtils:
             if output_file:
                 output_file.close()
 
-        print(f"文件已分割为 {file_count} 个部分，保存到: {output_dir}")
+        logger.info(f"文件已分割为 {file_count} 个部分，保存到: {output_dir}")
 
     @staticmethod
     def merge_files(input_dir: Union[str, Path],
@@ -199,7 +203,7 @@ class FileUtils:
         files = sorted(input_dir.glob(pattern))
 
         if not files:
-            print(f"警告: 在 {input_dir} 中没有找到匹配 {pattern} 的文件")
+            logger.info(f"警告: 在 {input_dir} 中没有找到匹配 {pattern} 的文件")
             return
 
         with open(output_file, 'w', encoding='utf-8') as out_f:
@@ -213,4 +217,5 @@ class FileUtils:
                         in_f.readline()
                         out_f.write(in_f.read())
 
-        print(f"文件已合并: {output_file}")
+        logger.info(f"文件已合并: {output_file}")
+

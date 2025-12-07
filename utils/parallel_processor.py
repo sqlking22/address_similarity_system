@@ -8,13 +8,18 @@
 """
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Any, Callable, Optional
+from typing import List, Dict, Any, Callable, Optional, Tuple
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import itertools
 import time
 from functools import partial
 import psutil
+from scipy.sparse import csr_matrix
+from utils.logger import setup_logging
+
+# 初始化日志记录器
+logger = setup_logging('parallel_processor.py').get_logger()
 
 
 class ParallelProcessor:
@@ -58,15 +63,15 @@ class ParallelProcessor:
         total_items = len(data)
         results = []
 
-        print(f"{desc}: 共 {total_items:,} 条数据，批处理大小: {batch_size}")
+        logger.info(f"{desc}: 共 {total_items:,} 条数据，批处理大小: {batch_size}")
 
         # 分批处理
         for batch_start in range(0, total_items, batch_size):
             batch_end = min(batch_start + batch_size, total_items)
             batch = data[batch_start:batch_end]
 
-            print(f"处理批次 {batch_start // batch_size + 1}/{(total_items + batch_size - 1) // batch_size} "
-                  f"({batch_start:,} - {batch_end:,})")
+            logger.info(f"处理批次 {batch_start // batch_size + 1}/{(total_items + batch_size - 1) // batch_size} "
+                        f"({batch_start:,} - {batch_end:,})")
 
             # 检查内存使用
             if self.max_memory_gb:
@@ -103,7 +108,7 @@ class ParallelProcessor:
                     batch_results.append(result)
                 except Exception as e:
                     item = future_to_item[future]
-                    print(f"处理失败: {item}, 错误: {e}")
+                    logger.error(f"处理失败: {item}, 错误: {e}")
                     batch_results.append(None)
 
             return batch_results
@@ -127,7 +132,7 @@ class ParallelProcessor:
         """
         total_items = len(data)
 
-        print(f"Map-Reduce处理: 共 {total_items:,} 条数据")
+        logger.info(f"Map-Reduce处理: 共 {total_items:,} 条数据")
 
         # 第一步：Map（并行）
         mapped_results = self.batch_process(
@@ -135,7 +140,7 @@ class ParallelProcessor:
         )
 
         # 第二步：Reduce
-        print("Reduce阶段...")
+        logger.info("Reduce阶段...")
         result = reduce_func(mapped_results)
 
         return result
@@ -182,7 +187,7 @@ class ParallelProcessor:
             used_gb = memory_info.used / (1024 ** 3)
 
             if used_gb > self.max_memory_gb * 0.9:  # 达到90%阈值
-                print(f"警告: 内存使用过高 ({used_gb:.1f}GB)，暂停处理...")
+                logger.warning(f"警告: 内存使用过高 ({used_gb:.1f}GB)，暂停处理...")
                 time.sleep(5)  # 暂停5秒
 
     def get_system_info(self) -> Dict[str, Any]:
@@ -236,7 +241,7 @@ class MemoryOptimizedProcessor:
         # 分块读取和处理
         for chunk in pd.read_csv(filepath, chunksize=chunksize, **kwargs):
             chunk_iter += 1
-            print(f"处理块 {chunk_iter} (共 {len(chunk)} 行)")
+            logger.info(f"处理块 {chunk_iter} (共 {len(chunk)} 行)")
 
             # 处理当前块
             processed_chunk = process_func(chunk)
@@ -258,7 +263,7 @@ class MemoryOptimizedProcessor:
                                   for chunk in data_chunks)
 
         if estimated_memory_mb > self.max_memory_gb * 1024 * 0.8:  # 达到80%阈值
-            print(f"内存警告: 当前使用约 {estimated_memory_mb:.1f}MB，达到阈值")
+            logger.warning(f"内存警告: 当前使用约 {estimated_memory_mb:.1f}MB，达到阈值")
 
             # 可以在这里实现保存中间结果到磁盘
             # 或者删除早期的不需要的块
@@ -312,7 +317,7 @@ class MemoryOptimizedProcessor:
         used_gb = memory.used / (1024 ** 3)
 
         if used_gb > self.max_memory_gb * 0.9:
-            print(f"内存使用过高: {used_gb:.1f}GB / {self.max_memory_gb:.1f}GB")
+            logger.warning(f"内存使用过高: {used_gb:.1f}GB / {self.max_memory_gb:.1f}GB")
 
 
 class SimilarityMatrixBuilder:
@@ -336,7 +341,6 @@ class SimilarityMatrixBuilder:
         Returns:
             稀疏相似度矩阵
         """
-        from scipy.sparse import csr_matrix
 
         # 过滤低于阈值的对
         filtered_pairs = [(i, j, sim) for i, j, sim in similarity_pairs
